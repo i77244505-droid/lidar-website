@@ -1,0 +1,23 @@
+{
+  "name": "lidar-sait",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --check server.js && node --check public/js/app.js && node --check scripts/env-vault.js && node --check config/envVault.js",
+    "env:encrypt": "node scripts/env-vault.js encrypt",
+    "env:check": "node scripts/env-vault.js check"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "nodemailer": "^8.0.7",
+    "serialport": "^13.0.0",
+    "ws": "^8.20.1"
+  }
+}

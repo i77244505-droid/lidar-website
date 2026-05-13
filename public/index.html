@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="bg">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="LiDAR 360° VR Скенер - Интерфейс за управление и визуализация на LiDAR данни в реално време">
+  <title>LiDAR 360° VR Скенер</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <div class="hud-top">
+    <div class="hud-badge" id="sys-badge">SYS:ACTIVE</div>
+
+    <!-- Battery -->
+    <div class="battery-wrap" id="battery-wrap" title="Батерия на устройството">
+      <div class="battery-icon">
+        <div class="battery-body">
+          <div class="battery-fill" id="battery-fill" style="width:75%;background:var(--primary)"></div>
+        </div>
+        <div class="battery-tip"></div>
+      </div>
+      <span class="battery-label" id="battery-label">75%</span>
+    </div>
+
+    <div class="depth-bar" id="depth-bar">
+      <div class="depth-seg" style="height:6px"></div>
+      <div class="depth-seg" style="height:10px"></div>
+      <div class="depth-seg" style="height:16px"></div>
+      <div class="depth-seg" style="height:10px"></div>
+      <div class="depth-seg" style="height:6px"></div>
+    </div>
+    <div style="display:flex; gap:8px;">
+      <div class="status-pill disconnected" id="backend-status">БЕКЕНД: ИЗКЛ.</div>
+      <div class="status-pill disconnected" id="lidar-status">ЛИДАР: ЛИПСВА</div>
+    </div>
+    <div id="status-pill" class="status-pill disconnected" style="display:none">НЕ Е СВЪРЗАН</div>
+  </div>
+</header>
+
+<!-- Radar Canvas -->
+<div id="radar-wrap">
+  <div class="vr-label">◈ VR MODE</div>
+  <canvas id="radar"></canvas>
+</div>
+
+<!-- Sidebar -->
+<aside>
+
+  <!-- Controls -->
+  <div class="panel-block" id="controls-panel">
+    <div class="panel-title" onclick="togglePanel(this)">Управление</div>
+    <div class="panel-body">
+      <button class="btn" id="btn-scan"  onclick="sendCmd('SCAN')">▶ Стартирай скан</button>
+      <button class="btn" id="btn-calib" onclick="sendCmd('CALIBRATE')">◈ Калибриране</button>
+      <button class="btn" id="btn-home"  onclick="sendCmd('HOME')">⌂ Начална позиция</button>
+      <button class="btn warning"        onclick="sendCmd('SIMULATE_SCAN')">🧪 Тестово сканиране</button>
+      <button class="btn danger"         onclick="clearRadar()">✕ Изчисти</button>
+      <div class="progress-wrap"><div id="progress-bar"></div></div>
+      <div style="font-size:0.68rem;color:var(--text-muted);text-align:right;margin-top:4px;font-family:var(--font-mono)" id="progress-label">0 / 360°</div>
+    </div>
+  </div>
+
+  <!-- Stats -->
+  <div class="panel-block" id="stats-panel">
+    <div class="panel-title" onclick="togglePanel(this)">Статистика</div>
+    <div class="panel-body">
+      <div class="stat-row"><span class="stat-label">ТОЧКИ</span>      <span class="stat-val" id="s-points">0</span></div>
+      <div class="stat-row"><span class="stat-label">ВАЛИДНИ</span>    <span class="stat-val" id="s-valid">0</span></div>
+      <div class="stat-row"><span class="stat-label">МИН. РАЗСТ.</span><span class="stat-val" id="s-min">— cm</span></div>
+      <div class="stat-row"><span class="stat-label">МАКС. РАЗСТ.</span><span class="stat-val" id="s-max">— cm</span></div>
+      <div class="stat-row"><span class="stat-label">СРЕДНО</span>     <span class="stat-val" id="s-avg">— cm</span></div>
+      <div class="stat-row"><span class="stat-label">СКАНИ</span>      <span class="stat-val" id="s-scans">0</span></div>
+    </div>
+  </div>
+
+  <!-- Map Archive -->
+  <div class="panel-block" id="maps-panel">
+    <div class="panel-title" onclick="togglePanel(this)">
+      Карти
+      <span id="map-count-badge" style="font-size:0.62rem;color:var(--warning);margin-left:auto;font-family:var(--font-mono)">0 карти</span>
+    </div>
+    <div class="panel-body">
+      <button class="btn" onclick="saveCurrentScan()" id="btn-save-map" style="margin-bottom:6px">⊕ Запази текущата карта</button>
+      <button class="btn warning" onclick="generateTestMap()" style="margin-bottom:10px">🧪 Генерирай тестова карта</button>
+      <div class="map-list" id="map-list">
+        <div class="empty-state">Няма запазени карти</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Email Scheduler -->
+  <div class="panel-block" id="email-panel">
+    <div class="panel-title" onclick="togglePanel(this)">
+      Имейл планировчик
+      <span id="email-active-tag" class="tag" style="display:none">АКТИВЕН</span>
+    </div>
+    <div class="panel-body">
+      <div class="field-label">Имейл адрес</div>
+      <input type="email" id="email-addr" placeholder="example@email.com">
+
+      <div class="field-label">Изпращай на</div>
+      <select id="email-freq">
+        <option value="manual">Само ръчно</option>
+        <option value="scan">След всеки скан</option>
+        <option value="hourly">Всеки час</option>
+        <option value="daily">Веднъж дневно</option>
+        <option value="custom">По зададено време</option>
+      </select>
+
+      <div id="custom-time-wrap" style="display:none">
+        <div class="field-label">Час на изпращане</div>
+        <input type="time" id="email-time" value="08:00">
+      </div>
+
+      <div class="field-label">Брой карти за прикачване</div>
+      <select id="email-maps">
+        <option value="1">Последна карта</option>
+        <option value="3">Последни 3 карти</option>
+        <option value="all">Всички карти</option>
+      </select>
+
+      <div class="schedule-row">
+        <div class="email-status" id="email-status" style="flex:1; margin:0; text-align:left; font-size:0.7rem"></div>
+        <button class="btn danger" onclick="clearEmailSettings()" style="width:auto;padding:10px 14px" title="Изтрий настройките">✕</button>
+      </div>
+      <button class="btn" style="margin-top:6px" onclick="sendEmailNow()">↑ Изпрати сега</button>
+    </div>
+  </div>
+
+  <!-- Log -->
+
+
+  <!-- CSV -->
+  <div class="panel-block" style="padding:12px 18px; margin-top:auto;">
+    <button class="btn" style="margin:0" onclick="downloadCSV()">↓ Запази CSV</button>
+  </div>
+
+</aside>
+<!-- Footer (Log) -->
+<footer class="log-footer">
+  <div class="log-header">СИСТЕМЕН ЛОГ</div>
+  <div id="log"></div>
+</footer>
+
+<!-- Map View Modal -->
+<div class="modal-bg" id="map-modal" onclick="closeMapModal(event)">
+  <div class="modal">
+    <div class="modal-close" onclick="closeModal()">✕</div>
+    <div class="modal-title" id="modal-title">Преглед на карта</div>
+    <canvas id="modal-canvas" width="400" height="400"></canvas>
+    <div class="modal-info" id="modal-info"></div>
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button class="btn" style="margin:0" onclick="downloadModalCSV()">↓ CSV</button>
+      <button class="btn" style="margin:0" onclick="downloadMapImage()">↓ PNG</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/app.js"></script>
+</body>
+</html>
