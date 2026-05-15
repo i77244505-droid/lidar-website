@@ -111,7 +111,6 @@ function handleMessage(msg) {
       scanCount++; setStatus('connected', 'СВЪРЗАН');
       log(`✓ Скан завършен — ${msg.points || scanData.length} валидни точки`, 'ok');
       updateStats(); document.getElementById('s-scans').textContent = scanCount;
-      // Re-enable buttons only if physical hardware is still connected
       enableButtons(isHardwareConnected);
       autoSaveMap();
       if (emailSettings && emailSettings.freq === 'scan') sendEmailNow(true);
@@ -222,7 +221,7 @@ function drawScene(tctx, W, H, pts, swAngle, pulse, opts) {
     }
   }
 
-  // ── COMET TRAIL (clipped) ────────────────────────────────────
+  // COMET TRAIL (clipped)
   if (trail.length > 1) {
     tctx.save();
     tctx.beginPath(); tctx.arc(cx, cy, R, 0, Math.PI * 2); tctx.clip();
@@ -240,7 +239,7 @@ function drawScene(tctx, W, H, pts, swAngle, pulse, opts) {
     tctx.restore();
   }
 
-  // ── SWEEP CONE (green glow) ──────────────────────────────────
+  // SWEEP CONE (green glow)
   const swRad = (swAngle - 90) * Math.PI / 180;
   tctx.save();
   tctx.beginPath(); tctx.arc(cx, cy, R, 0, Math.PI * 2); tctx.clip();
@@ -265,7 +264,7 @@ function drawScene(tctx, W, H, pts, swAngle, pulse, opts) {
   tctx.shadowColor = '#00ff80'; tctx.shadowBlur = 18;
   tctx.fill(); tctx.shadowBlur = 0;
 
-  // ── POINTS — HSL heatmap + age fade ─────────────────────────
+  // POINTS — HSL heatmap + age fade
   pts.forEach((p, angle) => {
     if (!p || !p.valid || p.dist <= 0) return;
     const rad = (angle - 90) * Math.PI / 180;
@@ -291,7 +290,7 @@ function drawScene(tctx, W, H, pts, swAngle, pulse, opts) {
     tctx.fill(); tctx.shadowBlur = 0;
   });
 
-  // ── RIPPLE PINGS ─────────────────────────────────────────────
+  // RIPPLE PINGS
   rips.forEach(rip => {
     const age = now - rip.born;
     const progress = age / 650;
@@ -306,7 +305,7 @@ function drawScene(tctx, W, H, pts, swAngle, pulse, opts) {
     tctx.lineWidth = 1.5; tctx.stroke();
   });
 
-  // ── OUTER RING ───────────────────────────────────────────────
+  // OUTER RING
   tctx.beginPath(); tctx.arc(cx, cy, R, 0, Math.PI * 2);
   tctx.strokeStyle = `rgba(56,189,248,${0.2 + 0.08 * Math.sin(pulse * 2)})`;
   tctx.lineWidth = 2;
@@ -326,7 +325,7 @@ function drawScene(tctx, W, H, pts, swAngle, pulse, opts) {
   tctx.shadowColor = '#00ff80'; tctx.shadowBlur = 20;
   tctx.fill(); tctx.shadowBlur = 0;
 
-  // ── HUD OVERLAY ──────────────────────────────────────────────
+  // HUD OVERLAY
   if (showHUD) {
     tctx.font = '10px "JetBrains Mono", monospace';
     tctx.fillStyle = 'rgba(0,255,128,0.55)';
@@ -343,7 +342,6 @@ function drawRadar(ts = 0) {
   const dt = ts - frameTime; frameTime = ts;
   vrPulse += dt * 0.001; sweepAngle += dt * 0.04;
 
-  // FPS tracking
   if (dt > 0) fpsSamples.push(dt);
   if (fpsSamples.length > 30) fpsSamples.shift();
   if (ts - lastFpsUpdate > 600) {
@@ -352,11 +350,9 @@ function drawRadar(ts = 0) {
     lastFpsUpdate = ts;
   }
 
-  // Build sweep trail
   sweepTrail.push(sweepAngle);
   if (sweepTrail.length > 60) sweepTrail.shift();
 
-  // Expire old ripples
   const now = performance.now();
   ripples = ripples.filter(r => now - r.born < 650);
 
@@ -441,8 +437,11 @@ function generateTestMap() {
     name: '🧪 ' + shapeType + ' Карта #' + (savedMaps.length + 1),
     date: new Date().toLocaleString('bg'),
     points: fakePoints,
-    thumbnail: ''
+    thumbnail: null  // FIX: was empty string, now null so generateThumbnail runs
   };
+
+  // FIX: generate thumbnail for test maps too
+  mapObj.thumbnail = generateThumbnail(mapObj);
 
   savedMaps.unshift(mapObj);
   if (savedMaps.length > 50) savedMaps.pop();
@@ -545,10 +544,26 @@ function triggerDownload(href, filename) {
   const a = document.createElement('a'); a.href = href; a.download = filename; a.click();
 }
 
-// Email Scheduler
+// ─── Email Scheduler ────────────────────────────────────────────────────────
+
+// FIX: Read current field values directly — don't rely on prior saveEmailSettings() call
+function getEmailFormValues() {
+  return {
+    addr: document.getElementById('email-addr').value.trim(),
+    freq: document.getElementById('email-freq').value,
+    time: document.getElementById('email-time').value,
+    maps: document.getElementById('email-maps').value,
+  };
+}
+
+// FIX: Validate email with a proper regex instead of just checking for '@'
+function isValidEmail(addr) {
+  return typeof addr === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(addr);
+}
+
 document.getElementById('email-freq').addEventListener('change', function() {
   document.getElementById('custom-time-wrap').style.display = this.value === 'custom' ? 'block' : 'none';
-  saveEmailSettings(true); // Auto-save on frequency change
+  saveEmailSettings(true);
 });
 
 document.getElementById('email-addr').addEventListener('change', () => saveEmailSettings(true));
@@ -556,36 +571,41 @@ document.getElementById('email-time').addEventListener('change', () => saveEmail
 document.getElementById('email-maps').addEventListener('change', () => saveEmailSettings(true));
 
 function saveEmailSettings(silent = false) {
-  const addr = document.getElementById('email-addr').value.trim();
-  if (!addr || !addr.includes('@')) { 
-    if (!silent) showEmailStatus('Невалиден имейл адрес', 'err'); 
-    return; 
+  const { addr, freq, time, maps } = getEmailFormValues();
+
+  if (!isValidEmail(addr)) {
+    if (!silent) showEmailStatus('Невалиден имейл адрес', 'err');
+    return false;
   }
-  const freq = document.getElementById('email-freq').value;
-  const time = document.getElementById('email-time').value;
-  const maps = document.getElementById('email-maps').value;
-  
+
   emailSettings = { addr, freq, time, maps };
   localStorage.setItem('lidar_email', JSON.stringify(emailSettings));
   scheduleEmail();
-  
+
   showEmailStatus('✓ Активиран · ' + addr, 'ok');
   document.getElementById('email-active-tag').style.display = 'inline-block';
   if (!silent) log('Имейл планировчик активиран: ' + addr + ' · ' + freq, 'ok');
+  return true;
 }
 
 function clearEmailSettings() {
-  emailSettings = null; localStorage.removeItem('lidar_email');
-  if (emailScheduleTimer) clearInterval(emailScheduleTimer);
+  emailSettings = null;
+  localStorage.removeItem('lidar_email');
+  if (emailScheduleTimer) { clearInterval(emailScheduleTimer); emailScheduleTimer = null; }
   document.getElementById('email-active-tag').style.display = 'none';
   showEmailStatus('', '');
   document.getElementById('email-addr').value = '';
+  document.getElementById('email-freq').value = 'manual';
+  document.getElementById('email-time').value = '08:00';
+  document.getElementById('email-maps').value = '1';
+  document.getElementById('custom-time-wrap').style.display = 'none';
   log('Имейл планировчик деактивиран', 'info');
 }
 
 function scheduleEmail() {
-  if (emailScheduleTimer) clearInterval(emailScheduleTimer);
+  if (emailScheduleTimer) { clearInterval(emailScheduleTimer); emailScheduleTimer = null; }
   if (!emailSettings) return;
+
   if (emailSettings.freq === 'hourly') {
     emailScheduleTimer = setInterval(() => sendEmailNow(true), 3600000);
   } else if (emailSettings.freq === 'daily' || emailSettings.freq === 'custom') {
@@ -595,29 +615,60 @@ function scheduleEmail() {
       if (now.getHours() === th && now.getMinutes() === tm) sendEmailNow(true);
     }, 60000);
   }
+  // 'manual' and 'scan' need no timer
 }
 
+// FIX: Always read fresh values from form before sending,
+//      and attempt to save settings if not yet saved.
 function sendEmailNow(silent = false) {
-  if (!emailSettings || !emailSettings.addr) { if (!silent) showEmailStatus('Въведете имейл адрес първо', 'err'); return; }
-  if (savedMaps.length === 0 && scanData.length === 0) { if (!silent) showEmailStatus('Няма карти за изпращане', 'err'); return; }
-  let mapsToSend = emailSettings.maps === 'all' ? savedMaps : emailSettings.maps === '3' ? savedMaps.slice(0, 3) : savedMaps.slice(0, 1);
+  // Try to persist current form values first (in case user typed but didn't blur)
+  const { addr } = getEmailFormValues();
+
+  // If no saved settings yet, try saving now
+  if (!emailSettings || !emailSettings.addr) {
+    const saved = saveEmailSettings(false); // show error if invalid
+    if (!saved) return;
+  }
+
+  // After save attempt, re-check
+  if (!emailSettings || !isValidEmail(emailSettings.addr)) {
+    if (!silent) showEmailStatus('Въведете валиден имейл адрес първо', 'err');
+    return;
+  }
+
+  if (savedMaps.length === 0 && scanData.length === 0) {
+    if (!silent) showEmailStatus('Няма карти за изпращане', 'err');
+    return;
+  }
+
+  const mapsToSend = emailSettings.maps === 'all'
+    ? savedMaps
+    : emailSettings.maps === '3'
+      ? savedMaps.slice(0, 3)
+      : savedMaps.slice(0, 1);
+
   const payload = {
     to: emailSettings.addr,
     subject: `LiDAR Скан · ${new Date().toLocaleString('bg')}`,
-    maps: mapsToSend.map(m => ({ 
-      name: m.name, 
-      date: m.date, 
+    maps: mapsToSend.map(m => ({
+      name: m.name,
+      date: m.date,
       points: safeArray(m.points).length,
-      thumbnail: m.thumbnail // Added thumbnail
+      thumbnail: m.thumbnail
     }))
   };
+
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'SEND_EMAIL', payload }));
     if (!silent) showEmailStatus('✓ Изпратено към ' + emailSettings.addr, 'ok');
     log('↑ Имейл изпратен към ' + emailSettings.addr + ' · ' + mapsToSend.length + ' карти', 'ok');
   } else {
+    // Fallback: open mailto link
     const body = payload.maps.map(m => `• ${m.name} (${m.date}) — ${m.points} точки`).join('\n');
-    window.open(`mailto:${encodeURIComponent(emailSettings.addr)}?subject=${encodeURIComponent(payload.subject)}&body=${encodeURIComponent(body)}`);
+    const mailtoUrl = `mailto:${encodeURIComponent(emailSettings.addr)}`
+      + `?subject=${encodeURIComponent(payload.subject)}`
+      + `&body=${encodeURIComponent(body)}`;
+    window.open(mailtoUrl);
     if (!silent) showEmailStatus('↑ Отворен имейл клиент', 'ok');
     log('↑ Имейл клиент отворен за ' + emailSettings.addr, 'info');
   }
@@ -625,7 +676,8 @@ function sendEmailNow(silent = false) {
 
 function showEmailStatus(msg, type) {
   const el = document.getElementById('email-status');
-  el.textContent = msg; el.className = 'email-status' + (type ? ' ' + type : '');
+  el.textContent = msg;
+  el.className = 'email-status' + (type ? ' ' + type : '');
 }
 
 function restoreEmailSettings() {
@@ -634,12 +686,17 @@ function restoreEmailSettings() {
   document.getElementById('email-freq').value = emailSettings.freq || 'manual';
   document.getElementById('email-time').value = emailSettings.time || '08:00';
   document.getElementById('email-maps').value = emailSettings.maps || '1';
-  if (emailSettings.freq === 'custom') document.getElementById('custom-time-wrap').style.display = 'block';
+  if (emailSettings.freq === 'custom') {
+    document.getElementById('custom-time-wrap').style.display = 'block';
+  }
   document.getElementById('email-active-tag').style.display = 'inline-block';
+  // FIX: show persisted status on restore so user knows scheduler is active
+  showEmailStatus('✓ Активиран · ' + (emailSettings.addr || ''), 'ok');
   scheduleEmail();
 }
 
-// Panel collapse
+// ─── Panel collapse ──────────────────────────────────────────────────────────
+
 function togglePanel(titleEl) {
   const body = titleEl.nextElementSibling;
   if (!body || !body.classList.contains('panel-body')) return;
@@ -675,7 +732,6 @@ function updateProgress(n) {
 }
 
 function setStatus(cls, label) {
-  // Legacy status pill (hidden)
   const el = document.getElementById('status-pill');
   if (el) { el.className = 'status-pill ' + cls; el.textContent = label; }
 }
@@ -701,7 +757,7 @@ function setHardwareStatus(connected) {
   const fill = document.getElementById('battery-fill');
   const label = document.getElementById('battery-label');
   if (!el) return;
-  
+
   if (isHardwareConnected) {
     el.className = 'status-pill connected';
     el.textContent = 'ЛИДАР: СВЪРЗАН';
@@ -711,7 +767,6 @@ function setHardwareStatus(connected) {
     el.textContent = 'ЛИДАР: ЛИПСВА';
     if (fill) { fill.style.width = '0%'; fill.style.background = '#333'; }
     if (label) { label.textContent = 'Unknown'; label.style.opacity = '0.5'; }
-    // Only disable if we aren't currently in a test simulation
     if (!isSimulating) enableButtons(false);
   }
 }
@@ -733,10 +788,9 @@ function clearRadar() {
 }
 
 function enableButtons(on) {
-  const shouldEnable = !!on;
-  ['btn-scan','btn-calib','btn-home'].forEach(id => { 
+  ['btn-scan','btn-calib','btn-home'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) el.disabled = !shouldEnable; 
+    if (el) el.disabled = !on;
   });
 }
 
@@ -748,13 +802,11 @@ function downloadCSV() {
   log('CSV запазен', 'ok');
 }
 
+// ─── Safe helpers ────────────────────────────────────────────────────────────
+
 function safeJsonParse(raw, fallback) {
   if (!raw) return fallback;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return fallback;
-  }
+  try { return JSON.parse(raw); } catch { return fallback; }
 }
 
 function safeArray(value) {
@@ -775,9 +827,8 @@ function safeFilename(value) {
   return name || 'scan';
 }
 
+// ─── Init ────────────────────────────────────────────────────────────────────
 
-
-// Init
 window.addEventListener('resize', resize);
 resize();
 enableButtons(false);
