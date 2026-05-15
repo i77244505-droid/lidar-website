@@ -16,6 +16,7 @@ let isHardwareConnected = false;
 let savedMaps = safeArray(safeJsonParse(localStorage.getItem('lidar_maps'), []));
 let emailSettings = safeJsonParse(localStorage.getItem('lidar_email'), null);
 let emailScheduleTimer = null;
+let lastEmailSentTime = 0; // FIX: track last send time for reliable scheduling
 let currentViewMap = null;
 let batteryLevel = 75;
 let sweepTrail = [];
@@ -53,16 +54,16 @@ setInterval(() => {
 // WebSocket
 function connect() {
   ws = new WebSocket(buildWsUrl());
-  ws.onopen = () => { 
+  ws.onopen = () => {
     setBackendStatus(true);
-    log('Свързан към LiDAR сървъра', 'ok'); 
+    log('Свързан към LiDAR сървъра', 'ok');
   };
-  ws.onclose = () => { 
+  ws.onclose = () => {
     setBackendStatus(false);
     setHardwareStatus(false);
-    log('Връзката е прекъсната — опит след 3 сек...', 'err'); 
-    enableButtons(false); 
-    setTimeout(connect, 3000); 
+    log('Връзката е прекъсната — опит след 3 сек...', 'err');
+    enableButtons(false);
+    setTimeout(connect, 3000);
   };
   ws.onerror = () => log('WebSocket грешка', 'err');
   ws.onmessage = (e) => { try { handleMessage(JSON.parse(e.data)); } catch { log(String(e.data), 'info'); } };
@@ -76,10 +77,10 @@ function buildWsUrl() {
 }
 
 function sendCmd(cmd) {
-  if (ws && ws.readyState === WebSocket.OPEN) { 
+  if (ws && ws.readyState === WebSocket.OPEN) {
     if (cmd === 'SIMULATE_SCAN') isSimulating = true;
-    ws.send(JSON.stringify({ type: cmd })); 
-    log('→ ' + cmd, 'info'); 
+    ws.send(JSON.stringify({ type: cmd }));
+    log('→ ' + cmd, 'info');
   }
 }
 
@@ -416,7 +417,7 @@ function generateTestMap() {
   for (let i = 0; i < 360; i += 2) {
     const rad = (i * Math.PI) / 180;
     let dist = baseDist;
-    
+
     if (shapeType === 'RECT') {
       const wallFactor = 1 / Math.max(Math.abs(Math.cos(rad)), Math.abs(Math.sin(rad)));
       dist = baseDist * wallFactor;
@@ -437,10 +438,9 @@ function generateTestMap() {
     name: '🧪 ' + shapeType + ' Карта #' + (savedMaps.length + 1),
     date: new Date().toLocaleString('bg'),
     points: fakePoints,
-    thumbnail: null  // FIX: was empty string, now null so generateThumbnail runs
+    thumbnail: null
   };
 
-  // FIX: generate thumbnail for test maps too
   mapObj.thumbnail = generateThumbnail(mapObj);
 
   savedMaps.unshift(mapObj);
@@ -544,9 +544,8 @@ function triggerDownload(href, filename) {
   const a = document.createElement('a'); a.href = href; a.download = filename; a.click();
 }
 
-// ─── Email Scheduler ────────────────────────────────────────────────────────
+// ─── Email Scheduler ─────────────────────────────────────────────────────────
 
-// FIX: Read current field values directly — don't rely on prior saveEmailSettings() call
 function getEmailFormValues() {
   return {
     addr: document.getElementById('email-addr').value.trim(),
@@ -556,7 +555,6 @@ function getEmailFormValues() {
   };
 }
 
-// FIX: Validate email with a proper regex instead of just checking for '@'
 function isValidEmail(addr) {
   return typeof addr === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(addr);
 }
@@ -588,12 +586,14 @@ function saveEmailSettings(silent = false) {
   return true;
 }
 
+// FIX: Reset lastEmailSentTime and status text on clear
 function clearEmailSettings() {
   emailSettings = null;
+  lastEmailSentTime = 0;
   localStorage.removeItem('lidar_email');
   if (emailScheduleTimer) { clearInterval(emailScheduleTimer); emailScheduleTimer = null; }
+  showEmailStatus('', ''); // FIX: clear stale status before resetting fields
   document.getElementById('email-active-tag').style.display = 'none';
-  showEmailStatus('', '');
   document.getElementById('email-addr').value = '';
   document.getElementById('email-freq').value = 'manual';
   document.getElementById('email-time').value = '08:00';
@@ -602,35 +602,47 @@ function clearEmailSettings() {
   log('Имейл планировчик деактивиран', 'info');
 }
 
+// FIX: Use elapsed-time comparison instead of exact-minute polling —
+//      reliable even when the browser tab is sleeping or setInterval drifts.
 function scheduleEmail() {
   if (emailScheduleTimer) { clearInterval(emailScheduleTimer); emailScheduleTimer = null; }
   if (!emailSettings) return;
 
   if (emailSettings.freq === 'hourly') {
-    emailScheduleTimer = setInterval(() => sendEmailNow(true), 3600000);
+    // Poll every 30 s; fire when ≥1 h has elapsed since last send
+    emailScheduleTimer = setInterval(() => {
+      if (Date.now() - lastEmailSentTime >= 3_600_000) {
+        sendEmailNow(true);
+        lastEmailSentTime = Date.now();
+      }
+    }, 30_000);
+
   } else if (emailSettings.freq === 'daily' || emailSettings.freq === 'custom') {
+    // Poll every 30 s; fire when within a 2-min window of the target time
+    // AND at least 23 h have elapsed since the last send (prevents double-fire)
     emailScheduleTimer = setInterval(() => {
       const now = new Date();
       const [th, tm] = (emailSettings.time || '08:00').split(':').map(Number);
-      if (now.getHours() === th && now.getMinutes() === tm) sendEmailNow(true);
-    }, 60000);
+      const targetToday = new Date(now);
+      targetToday.setHours(th, tm, 0, 0);
+      const withinWindow = Math.abs(now - targetToday) < 120_000;
+      const notSentToday = Date.now() - lastEmailSentTime > 23 * 3_600_000;
+      if (withinWindow && notSentToday) {
+        sendEmailNow(true);
+        lastEmailSentTime = Date.now();
+      }
+    }, 30_000);
   }
   // 'manual' and 'scan' need no timer
 }
 
-// FIX: Always read fresh values from form before sending,
-//      and attempt to save settings if not yet saved.
+// FIX: Remove dead `addr` variable; rely solely on emailSettings populated by saveEmailSettings()
 function sendEmailNow(silent = false) {
-  // Try to persist current form values first (in case user typed but didn't blur)
-  const { addr } = getEmailFormValues();
-
-  // If no saved settings yet, try saving now
   if (!emailSettings || !emailSettings.addr) {
-    const saved = saveEmailSettings(false); // show error if invalid
+    const saved = saveEmailSettings(false);
     if (!saved) return;
   }
 
-  // After save attempt, re-check
   if (!emailSettings || !isValidEmail(emailSettings.addr)) {
     if (!silent) showEmailStatus('Въведете валиден имейл адрес първо', 'err');
     return;
@@ -663,7 +675,6 @@ function sendEmailNow(silent = false) {
     if (!silent) showEmailStatus('✓ Изпратено към ' + emailSettings.addr, 'ok');
     log('↑ Имейл изпратен към ' + emailSettings.addr + ' · ' + mapsToSend.length + ' карти', 'ok');
   } else {
-    // Fallback: open mailto link
     const body = payload.maps.map(m => `• ${m.name} (${m.date}) — ${m.points} точки`).join('\n');
     const mailtoUrl = `mailto:${encodeURIComponent(emailSettings.addr)}`
       + `?subject=${encodeURIComponent(payload.subject)}`
@@ -690,12 +701,11 @@ function restoreEmailSettings() {
     document.getElementById('custom-time-wrap').style.display = 'block';
   }
   document.getElementById('email-active-tag').style.display = 'inline-block';
-  // FIX: show persisted status on restore so user knows scheduler is active
   showEmailStatus('✓ Активиран · ' + (emailSettings.addr || ''), 'ok');
   scheduleEmail();
 }
 
-// ─── Panel collapse ──────────────────────────────────────────────────────────
+// ─── Panel collapse ───────────────────────────────────────────────────────────
 
 function togglePanel(titleEl) {
   const body = titleEl.nextElementSibling;
@@ -802,7 +812,7 @@ function downloadCSV() {
   log('CSV запазен', 'ok');
 }
 
-// ─── Safe helpers ────────────────────────────────────────────────────────────
+// ─── Safe helpers ─────────────────────────────────────────────────────────────
 
 function safeJsonParse(raw, fallback) {
   if (!raw) return fallback;
@@ -827,7 +837,7 @@ function safeFilename(value) {
   return name || 'scan';
 }
 
-// ─── Init ────────────────────────────────────────────────────────────────────
+// ─── Init ─────────────────────────────────────────────────────────────────────
 
 window.addEventListener('resize', resize);
 resize();
